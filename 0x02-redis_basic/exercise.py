@@ -1,107 +1,79 @@
 #!/usr/bin/env python3
-"""
-Redis module
-"""
-import sys
-from functools import wraps
-from typing import Union, Optional, Callable
-from uuid import uuid4
 
+"""Import modules"""
+
+import functools
 import redis
+from uuid import uuid4
+from typing import Union, Callable, Any, Optional
 
-UnionOfTypes = Union[str, bytes, int, float]
 
-
-def count_calls(method: Callable) -> Callable:
-    """
-    a system to count how many
-    times methods of the Cache class are called.
-    :param method:
-    :return:
-    """
-    key = method.__qualname__
-
-    @wraps(method)
-    def wrapper(self, *args, **kwargs):
-        """
-        Wrap
-        :param self:
-        :param args:
-        :param kwargs:
-        :return:
-        """
-        self._redis.incr(key)
-        return method(self, *args, **kwargs)
-
-    return wrapper
+"""create a function"""
 
 
 def call_history(method: Callable) -> Callable:
-    """
-    add its input parameters to one list
-    in redis, and store its output into another list.
-    :param method:
-    :return:
-    """
-    key = method.__qualname__
-    i = "".join([key, ":inputs"])
-    o = "".join([key, ":outputs"])
+    """Decorator that maintains the history of method calls in history"""
 
-    @wraps(method)
-    def wrapper(self, *args, **kwargs):
-        """ Wrapp """
-        self._redis.rpush(i, str(args))
-        res = method(self, *args, **kwargs)
-        self._redis.rpush(o, str(res))
-        return res
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs) -> Any:
+        """function that increments the count in Redis for the given method"""
+        input_key = f"{method.__qualname__}:inputs"
+        output_key = f"{method.__qualname__}:outputs"
 
+        normalized_input = str(args)
+        self._redis.rpush(input_key, normalized_input)
+        outputs = method(self, *args, **kwargs)
+        self._redis.rpush(output_key, outputs)
+        return outputs
     return wrapper
 
 
-class Cache:
-    """
-    Cache redis class
-    """
+def replay(method: Callable) -> None:
+    """Display the history of calls of a particular function."""
+    redis_instance = method.__self__._redis
 
+    inputs = redis_instance.lrange(f"{method.__qualname__}:inputs", 0, -1)
+    outputs = redis_instance.lrange(f"{method.__qualname__}:outputs", 0, -1)
+
+    print(f"{method.__qualname__} was called {len(inputs)} times:")
+
+    for in_arg, out_arg in zip(inputs, outputs):
+        print(f"{method.__qualname__}(*{in_arg.decode('utf-8')}) -> \
+                {out_arg.decode('utf-8')}")
+
+
+"""Create a Class"""
+
+
+class Cache:
+    """class for writing strings to Redis"""
     def __init__(self):
-        """
-        constructor of the redis model
-        """
+        """function for initiating strings"""
         self._redis = redis.Redis()
         self._redis.flushdb()
 
-    @count_calls
     @call_history
-    def store(self, data: UnionOfTypes) -> str:
-        """
-        generate a random key (e.g. using uuid),
-         store the input data in Redis using the
-          random key and return the key.
-        :param data:
-        :return:
-        """
+    def store(self, data: Union[str, bytes, int, float]) -> str:
+        """method that creates a store"""
         key = str(uuid4())
-        self._redis.mset({key: data})
+        self._redis.set(key, data)
         return key
 
-    def get(self, key: str, fn: Optional[Callable] = None) \
-            -> UnionOfTypes:
-        """
-        convert the data back
-        to the desired format
-        :param key:
-        :param fn:
-        :return:
-        """
+    def get(self, key: str,
+            fn: Optional[Callable] = None) -> \
+            Union[str, bytes, int, float, None]:
+        """method that take a key string argument and Callable argument"""
+        value = self._redis.get(key)
+        if value is None:
+            return None
         if fn:
-            return fn(self._redis.get(key))
-        data = self._redis.get(key)
-        return data
+            return fn(value)
+        return value
 
-    def get_int(self: bytes) -> int:
-        """get a number"""
-        return int.from_bytes(self, sys.byteorder)
+    def get_str(self, key: str) -> Optional[str]:
+        """Method that will automatically parametrize"""
+        return self.get(key, fn=lambda d: d.decode("utf-8"))
 
-    def get_str(self: bytes) -> str:
-        """get a string"""
-        return self.decode("utf-8")
+    def get_int(self, key: str) -> Optional[int]:
+        """method that with automatically parameterize int"""
+        return self.get(key, fn=int)
